@@ -15,11 +15,15 @@ def download_video(url, audio_only=False, format=None, download_path=None):
     }
     
     # Set output template with download path if specified
-    outtmpl = '%(playlist_title)s/%(title)s.%(ext)s'
+    print(f"Debug: download_path argument received: {download_path}")
+    outtmpl = '%(title)s.%(ext)s'
     if download_path:
+        print(f"Debug: Using specified download path: {download_path}")
         outtmpl = f'{download_path}/{outtmpl}'
     else:
-        outtmpl = f'/Volumes/3ool0ne 2TB/coding tools/youtube-dl/music/{outtmpl}'
+        print("Debug: Using default music path")
+        outtmpl = f'/Volumes/3ool0ne 2TB/coding tools/youtube-dl/music/NA/{outtmpl}'
+    print(f"Debug: Final output template: {outtmpl}")
     
     if audio_only:
         ydl_opts.update({
@@ -70,6 +74,19 @@ if __name__ == "__main__":
     
     url = sys.argv[1]
     audio_only = '--audio-only' in sys.argv
-    format = next((arg[9:] for arg in sys.argv if arg.startswith('--format ')), None)
-    download_path = next((arg[7:] for arg in sys.argv if arg.startswith('--path ')), None)
+    format = None
+    download_path = None
+    
+    # Properly parse all arguments
+    for i, arg in enumerate(sys.argv[2:]):
+        if arg.startswith('--format='):
+            format = arg.split('=')[1]
+        elif arg.startswith('--path='):
+            download_path = arg.split('=')[1]
+        elif arg == '--format' and i+2 < len(sys.argv):
+            format = sys.argv[i+3]
+        elif arg == '--path' and i+2 < len(sys.argv):
+            download_path = sys.argv[i+3]
+    
+    print(f"Final parsed arguments - audio_only: {audio_only}, format: {format}, download_path: {download_path}")
     download_video(url, audio_only, format, download_path)

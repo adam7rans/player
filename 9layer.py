@@ -31,10 +31,11 @@ class MusicPlayer:
         self.playback_process = None
         self.running = False
         self.command_queue = Queue()
-        self.random_mode = False  # Random playback toggle
+        self.random_mode = True  # Random playback enabled by default
         self.volume = 50  # Default volume (0-100)
         self.muted = False
         self._term_settings = None
+        self.auto_play = True  # Auto-play enabled by default
 
     def find_music_files(self):
         files = []
@@ -62,9 +63,8 @@ class MusicPlayer:
         print("\033[0;0HNow Playing ...")  # Top-left
         print(f"\033[1;0H{os.path.basename(song)}")
         print("\033[2;0Hfrom")
-        print(f"\033[3;0H{album[:50]}")  # Limit album length
+        print(f"\033[3;0H{album}")
         
-        # Animation thread with guaranteed positions
         def animate():
             frame_idx = 0
             while not self.command_queue.empty() or \
@@ -76,8 +76,8 @@ class MusicPlayer:
                     print(f"\033[{5+i};0H{line}")
                 
                 # Status bar at fixed bottom position
-                print(f"\033[10;0H\033[KRandom: {'ON' if self.random_mode else 'OFF'} | Volume: {'🔇 MUTED' if self.muted else '🔊 '+str(self.volume)+'%'}")
-                print(f"\033[11;0H\033[KControls: [N]ext [P]rev [R]andom [=]Vol+ [-]Vol- [M]ute [Q]uit")
+                print(f"\033[10;0H\033[KRandom: {'ON' if self.random_mode else 'OFF'} | Volume: {'🔇 MUTED' if self.muted else '🔊 '+str(self.volume)+'%'} | AutoPlay: {'ON' if self.auto_play else 'OFF'}")
+                print(f"\033[11;0H\033[KControls: [N]ext [P]rev [<]SkipBack [>]SkipNext [R]andom [A]utoPlay [=]Vol+ [-]Vol- [M]ute [Q]uit")
                 
                 time.sleep(0.1)
                 frame_idx += 1
@@ -125,32 +125,52 @@ class MusicPlayer:
         self.music_files = self.find_music_files()
         
         # Start playing
-        if self.music_files:
+        if self.music_files and self.auto_play:
             self.play_current_song()
             
-            while self.running:
-                cmd = self.command_queue.get()
-                if cmd == 'stop':
-                    self.running = False
-                elif cmd == 'next':
+        while self.running:
+            cmd = self.command_queue.get()
+            if cmd == 'stop':
+                self.running = False
+            elif cmd == 'next':
+                if self.random_mode:
+                    self.current_index = random.randint(0, len(self.music_files)-1)
+                else:
+                    self.current_index = (self.current_index + 1) % len(self.music_files)
+                self.play_current_song()
+            elif cmd == 'prev':
+                self.current_index = (self.current_index - 1) % len(self.music_files)
+                self.play_current_song()
+            elif cmd == 'random':
+                self.random_mode = not self.random_mode
+            elif cmd == 'vol_up':
+                self.set_volume(change=10)
+            elif cmd == 'vol_down':
+                self.set_volume(change=-10)
+            elif cmd == 'mute':
+                self.set_volume(mute=not self.muted)
+            elif cmd == 'autoplay':
+                self.auto_play = not self.auto_play
+            elif cmd == 'skip_back':
+                if self.playback_process:
+                    self.playback_process.terminate()
+                    self.playback_process.wait()
+                    self.play_current_song()
+            elif cmd == 'skip_forward':
+                if self.playback_process:
+                    self.playback_process.terminate()
+                    self.playback_process.wait()
                     if self.random_mode:
                         self.current_index = random.randint(0, len(self.music_files)-1)
                     else:
                         self.current_index = (self.current_index + 1) % len(self.music_files)
                     self.play_current_song()
-                elif cmd == 'prev':
-                    self.current_index = (self.current_index - 1) % len(self.music_files)
-                    self.play_current_song()
-                elif cmd == 'random':
-                    self.random_mode = not self.random_mode
-                elif cmd == 'vol_up':
-                    self.set_volume(change=10)
-                elif cmd == 'vol_down':
-                    self.set_volume(change=-10)
-                elif cmd == 'mute':
-                    self.set_volume(mute=not self.muted)
-                
-                time.sleep(0.1)
+            
+            # Update status display
+            print(f"\033[10;0H\033[KRandom: {'ON' if self.random_mode else 'OFF'} | Volume: {'🔇 MUTED' if self.muted else '🔊 '+str(self.volume)+'%'} | AutoPlay: {'ON' if self.auto_play else 'OFF'}")
+            print(f"\033[11;0H\033[KControls: [N]ext [P]rev [<]SkipBack [>]SkipNext [R]andom [A]utoPlay [=]Vol+ [-]Vol- [M]ute [Q]uit")
+            
+            time.sleep(0.1)
     
     def input_handler(self):
         import tty
@@ -162,6 +182,7 @@ class MusicPlayer:
                 cmd = sys.stdin.read(1).lower()
                 if cmd == 'q':
                     self.stop()
+                    os._exit(0)  # Force exit the program
                     return
                 elif cmd == 'n':
                     self.command_queue.put('next')
@@ -175,10 +196,16 @@ class MusicPlayer:
                     self.command_queue.put('vol_down')
                 elif cmd == 'm':
                     self.command_queue.put('mute')
+                elif cmd == 'a':
+                    self.command_queue.put('autoplay')
+                elif cmd == '<':
+                    self.command_queue.put('skip_back')
+                elif cmd == '>':
+                    self.command_queue.put('skip_forward')
         except Exception as e:
             self.stop()
             raise
-    
+
     def run(self):
         print("Scanning music directory...")
         self.music_files = self.find_music_files()
@@ -191,6 +218,10 @@ class MusicPlayer:
         print(f"\033[KFound {len(self.music_files)} songs")
         self.running = True
         self.current_index = random.randint(0, len(self.music_files)-1)
+        
+        # Start playing immediately if autoplay is enabled
+        if self.auto_play:
+            self.play_current_song()
         
         # Start player thread
         player_thread = threading.Thread(target=self.player_loop)

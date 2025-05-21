@@ -7,6 +7,18 @@ import time
 import threading
 from queue import Queue
 from pathlib import Path
+import termios
+
+# Cassette animation frames
+CASSETTE_FRAMES = [
+    "╭───────╮\n│ ▒▒▒▒▒ │\n│◁ ┃ ┃ ▷│\n│ ▒▒▒▒▒ │\n╰───────╯",
+    "╭───────╮\n│▒▒▒▒▒▒ │\n│◁ ┃ ┃ ▷│\n│▒▒▒▒▒▒ │\n╰───────╯",
+    "╭───────╮\n│▒ ▒▒▒▒ │\n│◁ ┃ ┃ ▷│\n│▒ ▒▒▒▒ │\n╰───────╯",
+    "╭───────╮\n│▒▒ ▒▒▒ │\n│◁ ┃ ┃ ▷│\n│▒▒ ▒▒▒ │\n╰───────╯",
+    "╭───────╮\n│▒▒▒ ▒▒ │\n│◁ ┃ ┃ ▷│\n│▒▒▒ ▒▒ │\n╰───────╯",
+    "╭───────╮\n│▒▒▒▒ ▒ │\n│◁ ┃ ┃ ▷│\n│▒▒▒▒ ▒ │\n╰───────╯",
+    "╭───────╮\n│▒▒▒▒▒  │\n│◁ ┃ ┃ ▷│\n│▒▒▒▒▒  │\n╰───────╯"
+]
 
 SUPPORTED_FORMATS = ('.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac')
 MUSIC_DIR = '/Volumes/3ool0ne 2TB/coding tools/youtube-dl/music'
@@ -22,7 +34,8 @@ class MusicPlayer:
         self.random_mode = False  # Random playback toggle
         self.volume = 50  # Default volume (0-100)
         self.muted = False
-        
+        self._term_settings = None
+
     def find_music_files(self):
         files = []
         for root, _, filenames in os.walk(MUSIC_DIR):
@@ -40,16 +53,43 @@ class MusicPlayer:
             self.playback_process.wait()
             
         song = self.music_files[self.current_index]
-        print(f"\n\033[1mNow playing ({self.current_index+1}/{len(self.music_files)}):\033[0m")
-        print(f"{os.path.basename(song)}")
-        print(f"From: {os.path.dirname(song)}")
+        album = os.path.basename(os.path.dirname(song))
+        
+        # Clear screen and set absolute positions
+        print("\033[2J\033[H", end="")  # Clear screen
+        
+        # Fixed positions for all elements
+        print("\033[0;0HNow Playing ...")  # Top-left
+        print(f"\033[1;0H{os.path.basename(song)}")
+        print("\033[2;0Hfrom")
+        print(f"\033[3;0H{album[:50]}")  # Limit album length
+        
+        # Animation thread with guaranteed positions
+        def animate():
+            frame_idx = 0
+            while not self.command_queue.empty() or \
+                 (self.playback_process and self.playback_process.poll() is None):
+                frame = CASSETTE_FRAMES[frame_idx % len(CASSETTE_FRAMES)]
+                
+                # Print animation at fixed position (row 5, column 0)
+                for i, line in enumerate(frame.split('\n')):
+                    print(f"\033[{5+i};0H{line}")
+                
+                # Status bar at fixed bottom position
+                print(f"\033[10;0H\033[KRandom: {'ON' if self.random_mode else 'OFF'} | Volume: {'🔇 MUTED' if self.muted else '🔊 '+str(self.volume)+'%'}")
+                print(f"\033[11;0H\033[KControls: [N]ext [P]rev [R]andom [=]Vol+ [-]Vol- [M]ute [Q]uit")
+                
+                time.sleep(0.1)
+                frame_idx += 1
         
         self.playback_process = subprocess.Popen([PLAYER_CMD, song])
+        anim_thread = threading.Thread(target=animate)
+        anim_thread.daemon = True
+        anim_thread.start()
     
     def set_volume(self, change=None, mute=None):
-        """Set volume using AppleScript (macOS only)"""
+        """Set volume without extra output"""
         if sys.platform != 'darwin':
-            print("Volume control only available on macOS")
             return
             
         if mute is not None:
@@ -60,15 +100,39 @@ class MusicPlayer:
             self.muted = False
             
         vol = 0 if self.muted else self.volume
-        script = f"set volume output volume {vol}"
-        subprocess.run(['osascript', '-e', script])
-        print(f"\nVolume: {'🔇 MUTED' if self.muted else '🔊 '+str(self.volume)+'%'}")
+        subprocess.run(['osascript', '-e', f"set volume output volume {vol}"])
     
+    def stop(self):
+        self.running = False
+        if self.playback_process:
+            self.playback_process.terminate()
+            try:
+                self.playback_process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.playback_process.kill()
+        if self._term_settings:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._term_settings)
+
     def player_loop(self):
-        while self.running:
-            if not self.command_queue.empty():
+        self.running = True
+        
+        # Start input handler in separate thread
+        input_thread = threading.Thread(target=self.input_handler)
+        input_thread.daemon = True
+        input_thread.start()
+        
+        # Load music files
+        self.music_files = self.find_music_files()
+        
+        # Start playing
+        if self.music_files:
+            self.play_current_song()
+            
+            while self.running:
                 cmd = self.command_queue.get()
-                if cmd == 'next':
+                if cmd == 'stop':
+                    self.running = False
+                elif cmd == 'next':
                     if self.random_mode:
                         self.current_index = random.randint(0, len(self.music_files)-1)
                     else:
@@ -79,30 +143,27 @@ class MusicPlayer:
                     self.play_current_song()
                 elif cmd == 'random':
                     self.random_mode = not self.random_mode
-                    print(f"\nRandom mode {'ON' if self.random_mode else 'OFF'}")
                 elif cmd == 'vol_up':
                     self.set_volume(change=10)
                 elif cmd == 'vol_down':
                     self.set_volume(change=-10)
                 elif cmd == 'mute':
                     self.set_volume(mute=not self.muted)
-                elif cmd == 'stop':
-                    break
-            elif self.playback_process and self.playback_process.poll() is not None:
-                # Song finished naturally
-                if self.random_mode:
-                    self.current_index = random.randint(0, len(self.music_files)-1)
-                else:
-                    self.current_index = (self.current_index + 1) % len(self.music_files)
-                self.play_current_song()
-            
-            time.sleep(0.1)
+                
+                time.sleep(0.1)
     
     def input_handler(self):
-        while self.running:
-            try:
-                cmd = input().strip().lower()
-                if cmd == 'n':
+        import tty
+        fd = sys.stdin.fileno()
+        self._term_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while self.running:
+                cmd = sys.stdin.read(1).lower()
+                if cmd == 'q':
+                    self.stop()
+                    return
+                elif cmd == 'n':
                     self.command_queue.put('next')
                 elif cmd == 'p':
                     self.command_queue.put('prev')
@@ -114,45 +175,31 @@ class MusicPlayer:
                     self.command_queue.put('vol_down')
                 elif cmd == 'm':
                     self.command_queue.put('mute')
-                elif cmd == 'q':
-                    self.command_queue.put('stop')
-                    break
-            except (EOFError, KeyboardInterrupt):
-                self.command_queue.put('stop')
-                break
+        except Exception as e:
+            self.stop()
+            raise
     
     def run(self):
         print("Scanning music directory...")
         self.music_files = self.find_music_files()
         
         if not self.music_files:
-            print(f"No supported audio files found in {MUSIC_DIR}")
+            print(f"\033[KNo supported audio files found in {MUSIC_DIR}")
+            print("\033[KPlease download some music first using downloader.py")
             return
-        
-        print(f"Found {len(self.music_files)} songs")
-        self.current_index = random.randint(0, len(self.music_files)-1)
+            
+        print(f"\033[KFound {len(self.music_files)} songs")
         self.running = True
-        
-        # Start with first song immediately
-        self.play_current_song()
-        self.set_volume()  # Initialize volume
-        print("\nControls: [N]ext | [P]revious | [R]andom | [=]VolUp | [-]VolDown | [M]ute | [Q]uit")
-        print(f"Random mode: {'ON' if self.random_mode else 'OFF'}")
+        self.current_index = random.randint(0, len(self.music_files)-1)
         
         # Start player thread
         player_thread = threading.Thread(target=self.player_loop)
         player_thread.daemon = True
         player_thread.start()
         
-        # Start input handling in main thread
-        self.input_handler()
-        
-        # Cleanup
-        self.running = False
-        if self.playback_process:
-            self.playback_process.terminate()
+        # Wait for player thread to finish
         player_thread.join()
-        print("\nPlayer stopped")
+        print("\033[KPlayer stopped")
 
 if __name__ == "__main__":
     player = MusicPlayer()

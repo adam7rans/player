@@ -16,13 +16,13 @@ def download_video(url, audio_only=False, format=None, download_path=None):
     
     # Set output template with download path if specified
     print(f"Debug: download_path argument received: {download_path}")
-    outtmpl = '%(title)s.%(ext)s'
+    outtmpl = '%(playlist_title)s/%(title)s.%(ext)s'
     if download_path:
         print(f"Debug: Using specified download path: {download_path}")
         outtmpl = f'{download_path}/{outtmpl}'
     else:
-        print("Debug: Using default music path")
-        outtmpl = f'/Volumes/3ool0ne 2TB/coding tools/youtube-dl/music/NA/{outtmpl}'
+        print("Debug: Using default music path with playlist/album folders")
+        outtmpl = f'/Volumes/3ool0ne 2TB/coding tools/youtube-dl/music/{outtmpl}'
     print(f"Debug: Final output template: {outtmpl}")
     
     if audio_only:

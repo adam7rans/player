@@ -2,6 +2,7 @@
 import sys
 import sqlite3
 from pathlib import Path
+import os
 from yt_dlp import YoutubeDL
 
 # Database setup
@@ -91,7 +92,8 @@ def download_video(url, audio_only=False, format=None, download_path=None):
     if download_path:
         outtmpl = f'{download_path}/{outtmpl}'
     else:
-        outtmpl = f'/Volumes/3ool0ne 2TB/coding tools/youtube-dl/music/{outtmpl}'
+        print("Debug: Using default music path with playlist/album folders")
+        outtmpl = str(Path(os.path.dirname(os.path.abspath(__file__))) / 'music' / outtmpl)
     
     if audio_only:
         ydl_opts.update({
